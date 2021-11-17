@@ -7,27 +7,30 @@ const WIDTH: u32 = 800;
 const HEIGHT: u32 = 800;
 const LIGHT_DIR: Vector3<f32> = Vector3{x: 0.0, y: 0.0, z: -1.0};
 
-fn barycentric(pts: &[Vector2<i32>; 3], p: Vector2<i32>) -> Vector3<f32> {
+fn barycentric(pts: &[Vector2<f32>; 3], p: Vector2<f32>) -> Vector3<f32> {
     // Let a triangle be labeled ABC
     let x = Vector3::new(pts[2].x - pts[0].x, pts[1].x - pts[0].x, pts[0].x - p.x);
     let y = Vector3::new(pts[2].y - pts[0].y, pts[1].y - pts[0].y, pts[0].y - p.y);
     let u = x.cross(y);
-    if u.z.abs() == 0 { Vector3::new(-1.0, 1.0, 1.0) } else { Vector3::new(1.0 - ((u.x + u.y) as f32)/(u.z as f32), (u.y as f32)/(u.z as f32), (u.x as f32)/(u.z as f32)) }
+    if u.z.abs() < 1.0 { Vector3::new(-1.0, 1.0, 1.0) } else { Vector3::new(1.0 - (u.x + u.y)/u.z, u.y/u.z, u.x/u.z) }
 }
 
-fn triangle(pts: &[Vector2<i32>; 3], image: &mut RgbImage, color: Rgb<u8>) {
-    let mut bboxmin = Vector2::new((image.width() - 1) as i32, (image.height() - 1) as i32);
-    let mut bboxmax = Vector2::new(0, 0);
-    let clamp = Vector2::new((image.width() - 1) as i32, (image.height() - 1) as i32);
+fn triangle(pts: &[Vector2<f32>; 3], image: &mut RgbImage, color: Rgb<u8>) {
+    let mut bboxmin: Vector2<u32> = Vector2::new((image.width() - 1).into(), (image.height() - 1).into());
+    let mut bboxmax: Vector2<u32> = Vector2::new(0, 0);
+    let clamp: Vector2<u32> = Vector2::new((image.width() - 1).into(), (image.height() - 1).into());
     for i in 0..3 {
         for j in 0..2 {
-            bboxmin[j] = bboxmin[j].clamp(0, pts[i][j]);
-            bboxmax[j] = bboxmax[j].max(pts[i][j]).min(clamp[j]);
+            if pts[i][j].is_sign_negative() {
+                panic!("Triangle outside bounds of canvas");
+            }
+            bboxmin[j] = bboxmin[j].clamp(0, pts[i][j] as u32);
+            bboxmax[j] = bboxmax[j].max(pts[i][j] as u32).min(clamp[j]);
         }
     }
     for x in bboxmin.x..=bboxmax.x {
         for y in bboxmin.y..=bboxmax.y {
-            let p: Vector2<i32> = Vector2::new(x, y);
+            let p: Vector2<f32> = Vector2::new(x as f32, y as f32);
             let bc_screen = barycentric(&pts, p);
             if bc_screen.x.is_sign_positive() && bc_screen.y.is_sign_positive() && bc_screen.z.is_sign_positive() {
                 image.put_pixel(x.try_into().unwrap(), y.try_into().unwrap(), color);
@@ -44,11 +47,11 @@ fn main() {
 
     let verts = model.get_verts();
     for face in model.get_faces() {
-        let mut screen_coords: [Vector2<i32>; 3] = [Vector2{x: 0, y: 0}; 3];
+        let mut screen_coords: [Vector2<f32>; 3] = [Vector2{x: 0.0, y: 0.0}; 3];
         let mut world_coords: [Vector3<f32>; 3] = [Vector3{x: 0.0, y: 0.0, z: 0.0}; 3];
         for j in 0..3usize {
             let v = verts[face[j]];
-            screen_coords[j] = Vector2::new(((v.x + 1.0)*(WIDTH as f32)/2.0) as i32, ((v.y + 1.0)*(HEIGHT as f32)/2.0) as i32);
+            screen_coords[j] = Vector2::new((v.x + 1.0)*(WIDTH as f32)/2.0, (v.y + 1.0)*(HEIGHT as f32)/2.0);
             world_coords[j] = v;
         }
         let mut n = (world_coords[2] - world_coords[0]).cross(world_coords[1] - world_coords[0]);
