@@ -1,5 +1,5 @@
 use anyhow::Result;
-use cgmath::{dot, Vector2, Vector3};
+use cgmath::{dot, Matrix4, SquareMatrix, Vector2, Vector3, Vector4};
 use image::io::Reader as ImageReader;
 use image::{imageops, ImageBuffer, RgbImage};
 
@@ -7,11 +7,32 @@ mod model;
 
 const WIDTH: u32 = 800;
 const HEIGHT: u32 = 800;
+const DEPTH: f32 = 255.0;
 const LIGHT_DIR: Vector3<f32> = Vector3 {
     x: 0.0,
     y: 0.0,
     z: -1.0,
 };
+const CAMERA: Vector3<f32> = Vector3 {
+    x: 0.0,
+    y: 0.0,
+    z: 3.0,
+};
+
+fn viewport(x: f32, y: f32, width: f32, height: f32) -> Matrix4<f32> {
+    let mut m = Matrix4::<f32>::identity();
+    // translations to the centre of the desired rectangle
+    // read as w * value -> x
+    m.w.x = x + width / 2.0;
+    m.w.y = y + height / 2.0;
+    m.w.z = DEPTH / 2.0;
+
+    // scaling
+    m.x.x = width / 2.0;
+    m.y.y = height / 2.0;
+    m.z.z = DEPTH / 2.0;
+    m
+}
 
 fn barycentric(pts: &[Vector2<f32>; 3], p: Vector2<f32>) -> Vector3<f32> {
     // Let a triangle be labeled ABC which are located at pts[0] pts[1] and pts[2]
@@ -40,7 +61,8 @@ fn triangle(
     for i in 0..3 {
         for j in 0..2 {
             if pts[i][j].is_sign_negative() {
-                panic!("Triangle outside bounds of canvas");
+                print!("Triangle outside bounds of canvas\n");
+                return;
             }
             bboxmin[j] = bboxmin[j].clamp(0, pts[i][j] as u32);
             bboxmax[j] = bboxmax[j].max(pts[i][j] as u32).min(clamp[j]);
@@ -96,6 +118,17 @@ fn main() -> Result<()> {
     imageops::flip_vertical_in_place(&mut texture);
 
     let mut image: RgbImage = ImageBuffer::new(WIDTH, HEIGHT);
+
+    let mut projection = Matrix4::<f32>::identity();
+    // read as z * value -> w
+    projection.z.w = -1.0 / CAMERA.z;
+    let viewport = viewport(
+        (WIDTH / 8) as f32,
+        (HEIGHT / 8) as f32,
+        (WIDTH * 3 / 4) as f32,
+        (HEIGHT * 3 / 4) as f32,
+    );
+
     let mut zbuffer: Vec<f32> = vec![f32::NEG_INFINITY; (WIDTH * HEIGHT).try_into()?];
 
     let verts = model.get_verts();
@@ -120,11 +153,8 @@ fn main() -> Result<()> {
         let mut texture_coords: [Vector2<f32>; 3] = [Vector2 { x: 0.0, y: 0.0 }; 3];
         for j in 0..3usize {
             let v = verts[face[j].v];
-            screen_coords[j] = Vector3::new(
-                (v.x + 1.0) * (WIDTH as f32) / 2.0,
-                (v.y + 1.0) * (HEIGHT as f32) / 2.0,
-                v.z,
-            );
+            let v4 = viewport * projection * Vector4::<f32>::new(v.x, v.y, v.z, 1.0);
+            screen_coords[j] = Vector3::new(v4.x / v4.w, v4.y / v4.w, v4.z / v4.w);
             norm_coords[j] = norms[face[j].v];
             // no need for normalization since they already are
             texture_coords[j] = uvs[face[j].vt];
