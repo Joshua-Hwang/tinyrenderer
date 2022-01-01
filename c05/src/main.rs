@@ -1,7 +1,7 @@
 use anyhow::Result;
 use cgmath::{dot, InnerSpace, Matrix, Matrix4, SquareMatrix, Vector2, Vector3, Vector4};
 use image::io::Reader as ImageReader;
-use image::{imageops, ImageBuffer, RgbImage};
+use image::{imageops, ImageBuffer, RgbImage, GrayImage, Luma};
 
 mod model;
 
@@ -15,8 +15,8 @@ const LIGHT_DIR: Vector3<f32> = Vector3 {
 };
 const EYE: Vector3<f32> = Vector3 {
     x: 1.0,
-    y: 1.0,
-    z: 3.0,
+    y: 0.0,
+    z: 2.0,
 };
 const CENTER: Vector3<f32> = Vector3 {
     x: 0.0,
@@ -86,7 +86,7 @@ fn triangle(
     pts: &[Vector3<f32>; 3],
     norm_pts: &[Vector3<f32>; 3],
     uv_pts: &[Vector2<f32>; 3],
-    zbuffer: &mut Vec<f32>,
+    zbuffer: &mut GrayImage,
     image: &mut RgbImage,
     texture: &RgbImage,
 ) {
@@ -116,9 +116,9 @@ fn triangle(
                 continue;
             }
             p.z = pts[0].z * bc_screen[0] + pts[1].z * bc_screen[1] + pts[2].z * bc_screen[2];
-            let zi = (p.x + p.y * (image.width() as f32)) as usize;
-            if zbuffer[zi] < p.z {
-                zbuffer[zi] = p.z;
+            print!("p.z = {}\n", p.z);
+            if zbuffer.get_pixel(p.x as u32, p.y as u32)[0] < p.z as u8 {
+                zbuffer.put_pixel(p.x as u32, p.y as u32, Luma { 0: [p.z as u8] });
 
                 let mut uv =
                     uv_pts[0] * bc_screen[0] + uv_pts[1] * bc_screen[1] + uv_pts[2] * bc_screen[2];
@@ -126,11 +126,10 @@ fn triangle(
                 uv.y *= texture.height() as f32;
                 let mut color = texture.get_pixel(uv.x as u32, uv.y as u32).clone();
 
-                let mut n = norm_pts[0] * bc_screen[0]
+                let n = norm_pts[0] * bc_screen[0]
                     + norm_pts[1] * bc_screen[1]
                     + norm_pts[2] * bc_screen[2];
-                n = n / dot(n, n).sqrt();
-                let intensity = -dot(n, LIGHT_DIR); // n is wrong way around so swap
+                let intensity = -dot(n.normalize(), LIGHT_DIR); // n is wrong way around so swap
 
                 color[0] = ((color[0] as f32) * intensity) as u8;
                 color[1] = ((color[1] as f32) * intensity) as u8;
@@ -154,6 +153,7 @@ fn main() -> Result<()> {
     imageops::flip_vertical_in_place(&mut texture);
 
     let mut image: RgbImage = ImageBuffer::new(WIDTH, HEIGHT);
+    let mut zbuffer: GrayImage = ImageBuffer::new(WIDTH, HEIGHT);
 
     let mut projection = Matrix4::<f32>::identity();
     // read as z value -> w
@@ -174,8 +174,6 @@ fn main() -> Result<()> {
             z: 0.0,
         },
     );
-
-    let mut zbuffer: Vec<f32> = vec![f32::NEG_INFINITY; (WIDTH * HEIGHT).try_into()?];
 
     let verts = model.get_verts();
     let norms = model.get_norms();
@@ -199,7 +197,7 @@ fn main() -> Result<()> {
         let mut texture_coords: [Vector2<f32>; 3] = [Vector2 { x: 0.0, y: 0.0 }; 3];
         for j in 0..3usize {
             let v = verts[face[j].v];
-            let v4 = viewport * projection * model_view * Vector4::<f32>::new(v.x, v.y, v.z, 1.0);
+            let v4 = viewport * model_view * Vector4::<f32>::new(v.x, v.y, v.z, 1.0);
             screen_coords[j] = Vector3::new(v4.x / v4.w, v4.y / v4.w, v4.z / v4.w);
             norm_coords[j] = norms[face[j].v];
             // no need for normalization since they already are
@@ -219,6 +217,9 @@ fn main() -> Result<()> {
     // (0,0) is the bottom left
     imageops::flip_vertical_in_place(&mut image);
     image.save("output.tga")?;
+
+    imageops::flip_vertical_in_place(&mut zbuffer);
+    zbuffer.save("debug.tga")?;
 
     Ok(())
 }
