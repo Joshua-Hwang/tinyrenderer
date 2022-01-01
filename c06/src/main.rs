@@ -13,7 +13,7 @@ const HEIGHT: u32 = 800;
 const EYE: Vector3<f32> = Vector3 {
     x: 1.0,
     y: 1.0,
-    z: 3.0,
+    z: 1.0,
 };
 const CENTER: Vector3<f32> = Vector3 {
     x: 0.0,
@@ -34,22 +34,23 @@ const LIGHT_DIR: Vector3<f32> = Vector3 {
 
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().collect();
-    let model = model::file_to_model(if args.len() == 2 {
+    let path = if args.len() == 2 {
         &args[1]
     } else {
-        "obj/african_head.obj"
-    })?;
-    let mut texture = ImageReader::open("obj/african_head_diffuse.tga")?
+        "obj/african_head/african_head"
+    };
+    let model = model::file_to_model(format!("{}.obj", path).as_str())?;
+    let mut texture = ImageReader::open(format!("{}_diffuse.tga", path).as_str())?
         .decode()?
         .to_rgb8();
     imageops::flip_vertical_in_place(&mut texture);
 
-    let mut normal_map = ImageReader::open("obj/african_head_nm.tga")?
+    let mut normal_map = ImageReader::open(format!("{}_nm_tangent.tga", path).as_str())?
         .decode()?
         .to_rgb8();
     imageops::flip_vertical_in_place(&mut normal_map);
 
-    let mut specular_map = ImageReader::open("obj/african_head_spec.tga")?
+    let mut specular_map = ImageReader::open(format!("{}_spec.tga", path).as_str())?
         .decode()?
         .to_luma8();
     imageops::flip_vertical_in_place(&mut specular_map);
@@ -68,6 +69,12 @@ fn main() -> Result<()> {
 
     let mat = viewport * projection * model_view;
 
+//     let mut shader: shaders::NormalShader = shaders::NormalShader::new(
+//         LIGHT_DIR.normalize(),
+//         texture,
+//         normal_map,
+//         projection * model_view,
+//     );
     let mut shader: shaders::SpecularShader = shaders::SpecularShader::new(
         LIGHT_DIR.normalize(),
         texture,

@@ -1,7 +1,9 @@
 use super::model;
 use super::our_gl;
-use cgmath::{dot, InnerSpace, Matrix, Matrix4, Transform, Vector2, Vector3, Vector4};
-use image::{Rgb, RgbImage, Luma, GrayImage};
+use cgmath::{
+    dot, InnerSpace, Matrix, Matrix3, Matrix4, SquareMatrix, Transform, Vector2, Vector3, Vector4,
+};
+use image::{GrayImage, Rgb, RgbImage};
 
 pub struct GouraudShader {
     varying_intensity: Vector3<f32>,
@@ -152,6 +154,9 @@ pub struct NormalShader {
     texture: RgbImage,
     normal_map: RgbImage,
     varying_uv: [Vector2<f32>; 3],
+    varying_tri: [Vector4<f32>; 3],
+    ndc_tri: [Vector3<f32>; 3], // normalized version of above
+    varying_norm: [Vector3<f32>; 3],
     uniform_m: Matrix4<f32>,
     uniform_mit: Matrix4<f32>, // invert_transpose of m
 }
@@ -164,10 +169,26 @@ impl NormalShader {
         uniform_m: Matrix4<f32>, // projection * model_view
     ) -> NormalShader {
         NormalShader {
-            light_dir,
+            light_dir: (uniform_m * light_dir.extend(0.0)).truncate().normalize(),
             texture,
             normal_map,
             varying_uv: [Vector2 { x: 0.0, y: 0.0 }; 3],
+            varying_tri: [Vector4 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 0.0,
+            }; 3],
+            ndc_tri: [Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }; 3],
+            varying_norm: [Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }; 3],
             uniform_m,
             uniform_mit: uniform_m
                 .inverse_transform()
@@ -189,12 +210,20 @@ impl our_gl::Shader for NormalShader {
         let vt = model.get_faces()[iface][nthvert].vt;
 
         self.varying_uv[nthvert] = model.get_uvs()[vt];
+        self.varying_norm[nthvert] =
+            (self.uniform_mit * model.get_norms()[v].extend(0.0)).truncate();
 
         let gl_vertex = model.get_verts()[v].extend(1.0);
+        self.varying_tri[nthvert] = gl_vertex;
+        self.ndc_tri[nthvert] = gl_vertex.truncate() / gl_vertex.w;
         mat * gl_vertex
     }
 
     fn fragment(&self, bc: Vector3<f32>, color: &mut Rgb<u8>) -> bool {
+        let bn = (self.varying_norm[0] * bc[0]
+            + self.varying_norm[1] * bc[1]
+            + self.varying_norm[2] * bc[2])
+            .normalize();
         let uv =
             self.varying_uv[0] * bc[0] + self.varying_uv[1] * bc[1] + self.varying_uv[2] * bc[2];
         *color = self
@@ -205,23 +234,40 @@ impl our_gl::Shader for NormalShader {
             )
             .clone();
 
+        let a = Matrix3::<f32>::from_cols(
+            self.ndc_tri[1] - self.ndc_tri[0],
+            self.ndc_tri[2] - self.ndc_tri[0],
+            bn,
+        )
+        .transpose();
+        let ai = a.invert().expect("Matrix A does not have an inverse");
+
+        let i = ai
+            * Vector3::<f32>::new(
+                self.varying_uv[1].x - self.varying_uv[0].x,
+                self.varying_uv[2].x - self.varying_uv[0].x,
+                0.0,
+            );
+        let j = ai
+            * Vector3::<f32>::new(
+                self.varying_uv[1].y - self.varying_uv[0].y,
+                self.varying_uv[2].y - self.varying_uv[0].y,
+                0.0,
+            );
+
+        let b = Matrix3::<f32>::from_cols(i.normalize(), j.normalize(), bn);
+
         let n_info = self.normal_map.get_pixel(
             (uv.x * self.normal_map.width() as f32) as u32,
             (uv.y * self.normal_map.height() as f32) as u32,
         );
-        let n = (self.uniform_mit
-            * Vector4::<f32>::new(
-                n_info[2] as f32 / 255.0 * 2.0 - 1.0,
-                n_info[1] as f32 / 255.0 * 2.0 - 1.0,
-                n_info[0] as f32 / 255.0 * 2.0 - 1.0,
-                1.0,
-            ))
-        .truncate()
+        let n = b * Vector3::<f32>::new(
+            n_info[0] as f32 / 255.0 * 2.0 - 1.0,
+            n_info[1] as f32 / 255.0 * 2.0 - 1.0,
+            n_info[2] as f32 / 255.0 * 2.0 - 1.0,
+        )
         .normalize();
-        let l = (self.uniform_m * self.light_dir.extend(1.0))
-            .truncate()
-            .normalize();
-        let intensity = f32::max(0.0, dot(n, l));
+        let intensity = f32::max(0.0, dot(n, self.light_dir));
         color[0] = (color[0] as f32 * intensity) as u8;
         color[1] = (color[1] as f32 * intensity) as u8;
         color[2] = (color[2] as f32 * intensity) as u8;
@@ -235,6 +281,9 @@ pub struct SpecularShader {
     normal_map: RgbImage,
     specular_map: GrayImage,
     varying_uv: [Vector2<f32>; 3],
+    varying_tri: [Vector4<f32>; 3],
+    ndc_tri: [Vector3<f32>; 3], // normalized version of above
+    varying_norm: [Vector3<f32>; 3],
     uniform_m: Matrix4<f32>,
     uniform_mit: Matrix4<f32>, // invert_transpose of m
 }
@@ -248,11 +297,27 @@ impl SpecularShader {
         uniform_m: Matrix4<f32>, // projection * model_view
     ) -> SpecularShader {
         SpecularShader {
-            light_dir,
+            light_dir: (uniform_m * light_dir.extend(0.0)).truncate().normalize(),
             texture,
             normal_map,
             specular_map,
             varying_uv: [Vector2 { x: 0.0, y: 0.0 }; 3],
+            varying_tri: [Vector4 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+                w: 0.0,
+            }; 3],
+            ndc_tri: [Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }; 3],
+            varying_norm: [Vector3 {
+                x: 0.0,
+                y: 0.0,
+                z: 0.0,
+            }; 3],
             uniform_m,
             uniform_mit: uniform_m
                 .inverse_transform()
@@ -274,12 +339,20 @@ impl our_gl::Shader for SpecularShader {
         let vt = model.get_faces()[iface][nthvert].vt;
 
         self.varying_uv[nthvert] = model.get_uvs()[vt];
+        self.varying_norm[nthvert] =
+            (self.uniform_mit * model.get_norms()[v].extend(0.0)).truncate();
 
         let gl_vertex = model.get_verts()[v].extend(1.0);
+        self.varying_tri[nthvert] = gl_vertex;
+        self.ndc_tri[nthvert] = gl_vertex.truncate() / gl_vertex.w;
         mat * gl_vertex
     }
 
     fn fragment(&self, bc: Vector3<f32>, color: &mut Rgb<u8>) -> bool {
+        let bn = (self.varying_norm[0] * bc[0]
+            + self.varying_norm[1] * bc[1]
+            + self.varying_norm[2] * bc[2])
+            .normalize();
         let uv =
             self.varying_uv[0] * bc[0] + self.varying_uv[1] * bc[1] + self.varying_uv[2] * bc[2];
         *color = self
@@ -290,35 +363,52 @@ impl our_gl::Shader for SpecularShader {
             )
             .clone();
 
-        // since number is <= 1 raising to the power sends < 1 to 0
-        let spec_pow = self.specular_map
-            .get_pixel(
-                (uv.x * self.specular_map.width() as f32) as u32,
-                (uv.y * self.specular_map.height() as f32) as u32,
-            )[0];
+        let a = Matrix3::<f32>::from_cols(
+            self.ndc_tri[1] - self.ndc_tri[0],
+            self.ndc_tri[2] - self.ndc_tri[0],
+            bn,
+        )
+        .transpose();
+        let ai = a.invert().expect("Matrix A does not have an inverse");
+
+        let i = ai
+            * Vector3::<f32>::new(
+                self.varying_uv[1].x - self.varying_uv[0].x,
+                self.varying_uv[2].x - self.varying_uv[0].x,
+                0.0,
+            );
+        let j = ai
+            * Vector3::<f32>::new(
+                self.varying_uv[1].y - self.varying_uv[0].y,
+                self.varying_uv[2].y - self.varying_uv[0].y,
+                0.0,
+            );
+
+        let b = Matrix3::<f32>::from_cols(i.normalize(), j.normalize(), bn);
 
         let n_info = self.normal_map.get_pixel(
             (uv.x * self.normal_map.width() as f32) as u32,
             (uv.y * self.normal_map.height() as f32) as u32,
         );
-        let n = (self.uniform_mit
-            * Vector4::<f32>::new(
-                n_info[2] as f32 / 255.0 * 2.0 - 1.0,
-                n_info[1] as f32 / 255.0 * 2.0 - 1.0,
-                n_info[0] as f32 / 255.0 * 2.0 - 1.0,
-                1.0,
-            ))
-        .truncate()
+        let n = b * Vector3::<f32>::new(
+            n_info[0] as f32 / 255.0 * 2.0 - 1.0,
+            n_info[1] as f32 / 255.0 * 2.0 - 1.0,
+            n_info[2] as f32 / 255.0 * 2.0 - 1.0,
+        )
         .normalize();
-        let l = (self.uniform_m * self.light_dir.extend(1.0))
-            .truncate()
-            .normalize();
-        let r = (n * (2.0 * dot(n, l)) - l).normalize();
+
+        // since number is <= 1 raising to the power sends < 1 to 0
+        let spec_pow = self.specular_map.get_pixel(
+            (uv.x * self.specular_map.width() as f32) as u32,
+            (uv.y * self.specular_map.height() as f32) as u32,
+        )[0];
+
+        let r = (n * (2.0 * dot(n, self.light_dir)) - self.light_dir).normalize();
         let spec = r.z.max(0.0).powf(spec_pow as f32);
-        let diff = f32::max(0.0, dot(n, l));
-        color[0] = (5.0 + color[0] as f32 * (diff + 0.3*spec)).min(255.0) as u8;
-        color[1] = (5.0 + color[1] as f32 * (diff + 0.3*spec)).min(255.0) as u8;
-        color[2] = (5.0 + color[2] as f32 * (diff + 0.3*spec)).min(255.0) as u8;
+        let diff = f32::max(0.0, dot(n, self.light_dir));
+        color[0] = (5.0 + color[0] as f32 * (diff + 0.3 * spec)).min(255.0) as u8;
+        color[1] = (5.0 + color[1] as f32 * (diff + 0.3 * spec)).min(255.0) as u8;
+        color[2] = (5.0 + color[2] as f32 * (diff + 0.3 * spec)).min(255.0) as u8;
         true
     }
 }
